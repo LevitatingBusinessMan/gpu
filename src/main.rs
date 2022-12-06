@@ -49,7 +49,7 @@ kernel void saxpy_float (global float* z,
 
 // message is 512 bits (should be 16 ints)
 // padded like message + 1 + many zeros + 64bit-length
-kernel void md5 (global uchar* s, global uint* k, global uchar* message) {
+kernel void md5 (global uchar* s, global uint* k, global uchar* message, global uint* result) {
 	int A, a0;
 	A = a0 = 0x67452301;
 	int B, b0;
@@ -83,6 +83,12 @@ kernel void md5 (global uchar* s, global uint* k, global uchar* message) {
 		C = B;
 		B = B + ROTATE_LEFT(f, s[i]);
 	}
+
+
+	result[0] = a0 + A;
+	result[0] = b0 + B;
+	result[0] = c0 + C;
+	result[0] = d0 + D;
 }
 
 "#;
@@ -106,7 +112,7 @@ fn main() -> Result<()> {
     // Build the OpenCL program source and create the kernel.
     let program = Program::create_and_build_from_source(&context, PROGRAM_SOURCE, "")
         .expect("Program::create_and_build_from_source failed");
-    let kernel = Kernel::create(&program, KERNEL_NAME).expect("Kernel::create failed");
+    let kernel = Kernel::create(&program, "md5").expect("Kernel::create failed");
 
     /////////////////////////////////////////////////////////////////////
     // Compute data
@@ -168,8 +174,15 @@ fn main() -> Result<()> {
 	];
 
     let messagebuf = unsafe {
-        Buffer::<cl_uint>::create(&context, CL_MEM_USE_HOST_PTR, 16, message.as_mut_ptr() as *mut c_void)?
+        Buffer::<cl_uint>::create(&context, CL_MEM_USE_HOST_PTR, 64, message.as_mut_ptr() as *mut c_void)?
     };
+
+    let mut result: [cl_uint; 4] = [0; 4];
+
+    let resultbuf = unsafe {
+        Buffer::<cl_uint>::create(&context, CL_MEM_USE_HOST_PTR, 16, result.as_mut_ptr() as *mut c_void)?
+    };
+
     
     // Blocking write
     let _x_write_event = unsafe { queue.enqueue_write_buffer(&mut x, CL_BLOCKING, 0, &ones, &[])? };
@@ -185,14 +198,24 @@ fn main() -> Result<()> {
     // cl_float value arguments, before setting the one dimensional
     // global_work_size for the call to enqueue_nd_range.
     // Unwraps the Result to get the kernel execution event.
+    // let kernel_event = unsafe {
+        // ExecuteKernel::new(&kernel)
+            // .set_arg(&z)
+            // .set_arg(&x)
+            // .set_arg(&y)
+            // .set_arg(&a)
+            // .set_global_work_size(ARRAY_SIZE)
+            // .set_wait_event(&y_write_event)
+            // .enqueue_nd_range(&queue)?
+    // };
+
     let kernel_event = unsafe {
         ExecuteKernel::new(&kernel)
-            .set_arg(&z)
-            .set_arg(&x)
-            .set_arg(&y)
-            .set_arg(&a)
-            .set_global_work_size(ARRAY_SIZE)
-            .set_wait_event(&y_write_event)
+            .set_arg(&sbuf)
+            .set_arg(&kbuf)
+            .set_arg(&messagebuf)
+            .set_arg(&resultbuf)
+            .set_global_work_size(1)
             .enqueue_nd_range(&queue)?
     };
 
@@ -218,6 +241,8 @@ fn main() -> Result<()> {
     let end_time = kernel_event.profiling_command_end()?;
     let duration = end_time - start_time;
     println!("kernel execution duration (ns): {}", duration);
+
+	println!("{:?}", result);
 
     Ok(())
 }
