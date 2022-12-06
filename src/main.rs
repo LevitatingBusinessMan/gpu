@@ -29,15 +29,6 @@ use std::ptr;
 use std::boxed::Box;
 
 const PROGRAM_SOURCE: &str = r#"
-kernel void saxpy_float (global float* z,
-    global float const* x,
-    global float const* y,
-    float a)
-{
-    const size_t i = get_global_id(0);
-    z[i] = a*x[i] + y[i];
-}
-
 /* Basic MD5 functions */
 #define F(x, y, z) ((x & y) | (~x & z))
 #define G(x, y, z) ((x & z) | (y & ~z))
@@ -45,11 +36,12 @@ kernel void saxpy_float (global float* z,
 #define I(x, y, z) (y ^ (x | ~z))
 
 /* ROTATE_LEFT rotates x left n bits */
-#define ROTATE_LEFT(x, n) (((x) << (n)) | ((x) >> (32-(n))))
+#define ROTATE_LEFT(x, n) (x << n) | (x >> (32 - n))
 
 // message is 512 bits (should be 16 ints)
 // padded like message + 1 + many zeros + 64bit-length
-kernel void md5 (global uchar* s, global uint* k, global uchar* message, global uint* result) {
+// can be improved according to wikipedia
+kernel void md5 (global uchar* s, global uint* k, global uint* message, global uint* result) {
 	int A, a0;
 	A = a0 = 0x67452301;
 	int B, b0;
@@ -86,14 +78,14 @@ kernel void md5 (global uchar* s, global uint* k, global uchar* message, global 
 
 
 	result[0] = a0 + A;
-	result[0] = b0 + B;
-	result[0] = c0 + C;
-	result[0] = d0 + D;
+	result[1] = b0 + B;
+	result[2] = c0 + C;
+	result[3] = d0 + D;
 }
 
 "#;
 
-const KERNEL_NAME: &str = "saxpy_float";
+const KERNEL_NAME: &str = "md5";
 
 fn main() -> Result<()> {
     // Find a usable device for this application
@@ -112,7 +104,7 @@ fn main() -> Result<()> {
     // Build the OpenCL program source and create the kernel.
     let program = Program::create_and_build_from_source(&context, PROGRAM_SOURCE, "")
         .expect("Program::create_and_build_from_source failed");
-    let kernel = Kernel::create(&program, "md5").expect("Kernel::create failed");
+    let kernel = Kernel::create(&program, KERNEL_NAME).expect("Kernel::create failed");
 
     /////////////////////////////////////////////////////////////////////
     // Compute data
@@ -136,7 +128,7 @@ fn main() -> Result<()> {
         Buffer::<cl_float>::create(&context, CL_MEM_WRITE_ONLY, ARRAY_SIZE, ptr::null_mut())?
     };
 
-	let mut s: [cl_uchar; 64] = [ 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21 ];
+	let mut s: [cl_uchar; 64] = [ 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21];
 
 	let mut k: [cl_uint; 64] = [
 		0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee,
@@ -172,6 +164,13 @@ fn main() -> Result<()> {
 		0x00000000, 0x00000000, 0x00000000, 0x00000000,
 		0x00000000, 0x00000000, 0x00000000, 0x00000020,
 	];
+
+	// let mut message: [cl_uint; 16] = [
+		// 0x0000000, 0x00000000, 0x00000000, 0x00000000,
+		// 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+		// 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+		// 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+	// ];
 
     let messagebuf = unsafe {
         Buffer::<cl_uint>::create(&context, CL_MEM_USE_HOST_PTR, 64, message.as_mut_ptr() as *mut c_void)?
@@ -242,7 +241,7 @@ fn main() -> Result<()> {
     let duration = end_time - start_time;
     println!("kernel execution duration (ns): {}", duration);
 
-	println!("{:?}", result);
+	println!("{:x?}", result);
 
     Ok(())
 }
