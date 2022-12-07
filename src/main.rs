@@ -26,7 +26,6 @@ use opencl3::program::Program;
 use opencl3::types::*;
 use opencl3::Result;
 use std::ptr;
-use std::boxed::Box;
 
 const PROGRAM_SOURCE: &str = r#"
 /* Basic MD5 functions */
@@ -35,37 +34,35 @@ const PROGRAM_SOURCE: &str = r#"
 #define H(x, y, z) (x ^ y ^ z)
 #define I(x, y, z) (y ^ (x | ~z))
 
-/* ROTATE_LEFT rotates x left n bits */
-#define ROTATE_LEFT(x, n) (x << n) | (x >> (32 - n))
+#define ROTATE_LEFT(x, n) (x << n | x >> 32-n)
 
 // message is 512 bits (should be 16 ints)
 // padded like message + 1 + many zeros + 64bit-length
-// can be improved according to wikipedia
-kernel void md5 (global uchar* s, global uint* k, global uint* message, global uint* result) {
-	int A, a0;
+kernel void md5 (global uchar* s, global uint* k, global uint* message, global uint* digest) {
+	unsigned int A, a0;
 	A = a0 = 0x67452301;
-	int B, b0;
+	unsigned int B, b0;
 	B = b0 = 0xefcdab89;
-	int C, c0;
+	unsigned int C, c0;
 	C = c0 = 0x98badcfe;
-	int D, d0;
+	unsigned int D, d0;
 	D = d0 = 0x10325476;
 
 	for (int i=0; i < 64; i++) {
-		int f, g;
-		if (0 <= i <= 15) {
+		unsigned int f, g;
+		if (i < 16) {
 			f = F(B, C, D);
 			g = i; 
 		}
-		else if (16 <= i <= 31) {
+		else if (i < 32) {
 			f = G(B, C, D);
 			g = (5 * i + 1) % 16;
 		}
-		else if (32 <= i <= 47) {
+		else if (i < 48) {
 			f = H(B, C, D);
 			g = (3 * i + 5) % 16;
 		}
-		else if (48 <= i <= 63) {
+		else if (i < 64) {
 			f = I(B, C, D);
 			g = (7 * i) % 16;
 		}
@@ -76,13 +73,11 @@ kernel void md5 (global uchar* s, global uint* k, global uint* message, global u
 		B = B + ROTATE_LEFT(f, s[i]);
 	}
 
-
-	result[0] = a0 + A;
-	result[1] = b0 + B;
-	result[2] = c0 + C;
-	result[3] = d0 + D;
+	digest[0] = a0 + A;
+	digest[1] = b0 + B;
+	digest[2] = c0 + C;
+	digest[3] = d0 + D;
 }
-
 "#;
 
 const KERNEL_NAME: &str = "md5";
@@ -159,27 +154,20 @@ fn main() -> Result<()> {
     };
 
 	let mut message: [cl_uint; 16] = [
-		0xb00bb00b, 0xb00bb00b, 0xb00bb00b, 0xb00bb00c,
+		0xb00bb00b, 0xb00bb00b, 0xb00bb00b, 0xb00bb00b,
+		0x00000080, 0x00000000, 0x00000000, 0x00000000, // append a bit, meaning append 0x80 byte
 		0x00000000, 0x00000000, 0x00000000, 0x00000000,
-		0x00000000, 0x00000000, 0x00000000, 0x00000000,
-		0x00000000, 0x00000000, 0x00000000, 0x00000020,
+		0x00000000, 0x00000000, 0x00000080, 0x00000000, // last 64 bits is length in bits
 	];
-
-	// let mut message: [cl_uint; 16] = [
-		// 0x0000000, 0x00000000, 0x00000000, 0x00000000,
-		// 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-		// 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-		// 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-	// ];
 
     let messagebuf = unsafe {
         Buffer::<cl_uint>::create(&context, CL_MEM_USE_HOST_PTR, 64, message.as_mut_ptr() as *mut c_void)?
     };
 
-    let mut result: [cl_uint; 4] = [0; 4];
+    let mut digest: [cl_uint; 4] = [0; 4];
 
-    let resultbuf = unsafe {
-        Buffer::<cl_uint>::create(&context, CL_MEM_USE_HOST_PTR, 16, result.as_mut_ptr() as *mut c_void)?
+    let digestbuf = unsafe {
+        Buffer::<cl_uint>::create(&context, CL_MEM_USE_HOST_PTR, 16, digest.as_mut_ptr() as *mut c_void)?
     };
 
     
@@ -213,7 +201,7 @@ fn main() -> Result<()> {
             .set_arg(&sbuf)
             .set_arg(&kbuf)
             .set_arg(&messagebuf)
-            .set_arg(&resultbuf)
+            .set_arg(&digestbuf)
             .set_global_work_size(1)
             .enqueue_nd_range(&queue)?
     };
@@ -241,7 +229,7 @@ fn main() -> Result<()> {
     let duration = end_time - start_time;
     println!("kernel execution duration (ns): {}", duration);
 
-	println!("{:x?}", result);
+	println!("{:x?}", digest);
 
     Ok(())
 }
