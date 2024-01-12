@@ -1,7 +1,7 @@
 #![feature(libc)]
 extern crate libc;
 
-use libc::c_void;
+use libc::{c_void, c_uint};
 use opencl3::command_queue::{CommandQueue, CL_QUEUE_PROFILING_ENABLE};
 use opencl3::context::Context;
 use opencl3::device::{get_all_devices, Device, CL_DEVICE_TYPE_GPU};
@@ -11,58 +11,7 @@ use opencl3::program::Program;
 use opencl3::types::*;
 use opencl3::Result;
 
-const PROGRAM_SOURCE: &str = r#"
-/* Basic MD5 functions */
-#define F(x, y, z) ((x & y) | (~x & z))
-#define G(x, y, z) ((x & z) | (y & ~z))
-#define H(x, y, z) (x ^ y ^ z)
-#define I(x, y, z) (y ^ (x | ~z))
-
-#define ROTATE_LEFT(x, n) (x << n | x >> 32-n)
-
-// message is 512 bits (should be 16 ints)
-// padded like message + 1 + many zeros + 64bit-length
-kernel void md5 (global uchar* s, global uint* k, global uint* message, global uint* digest) {
-	unsigned int A, a0;
-	A = a0 = 0x67452301;
-	unsigned int B, b0;
-	B = b0 = 0xefcdab89;
-	unsigned int C, c0;
-	C = c0 = 0x98badcfe;
-	unsigned int D, d0;
-	D = d0 = 0x10325476;
-
-	for (int i=0; i < 64; i++) {
-		unsigned int f, g;
-		if (i < 16) {
-			f = F(B, C, D);
-			g = i; 
-		}
-		else if (i < 32) {
-			f = G(B, C, D);
-			g = (5 * i + 1) % 16;
-		}
-		else if (i < 48) {
-			f = H(B, C, D);
-			g = (3 * i + 5) % 16;
-		}
-		else if (i < 64) {
-			f = I(B, C, D);
-			g = (7 * i) % 16;
-		}
-		f = f + A + k[i] + message[g];
-		A = D;
-		D = C;
-		C = B;
-		B = B + ROTATE_LEFT(f, s[i]);
-	}
-
-	digest[0] = a0 + A;
-	digest[1] = b0 + B;
-	digest[2] = c0 + C;
-	digest[3] = d0 + D;
-}
-"#;
+const PROGRAM_SOURCE: &str = include_str!("md5.cl");
 
 const KERNEL_NAME: &str = "md5";
 
@@ -85,7 +34,10 @@ fn main() -> Result<()> {
         .expect("Program::create_and_build_from_source failed");
     let kernel = Kernel::create(&program, KERNEL_NAME).expect("Kernel::create failed");
 
-	let mut s: [cl_uchar; 64] = [ 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21];
+	let mut s: [cl_uchar; 64] = [
+		7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 4,
+		11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21
+	];
 
 	let mut k: [cl_uint; 64] = [
 		0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee,
@@ -115,12 +67,32 @@ fn main() -> Result<()> {
         Buffer::<cl_uint>::create(&context, CL_MEM_USE_HOST_PTR, 64, k.as_mut_ptr() as *mut c_void)?
     };
 
-	let mut message: [cl_uint; 16] = [
-		0xb00bb00b, 0xb00bb00b, 0xb00bb00b, 0xb00bb00b,
-		0x00000080, 0x00000000, 0x00000000, 0x00000000, // append a bit, meaning append 0x80 byte
-		0x00000000, 0x00000000, 0x00000000, 0x00000000,
-		0x00000000, 0x00000000, 0x00000080, 0x00000000, // last 64 bits is length in bits
-	];
+	let mut message: Vec<u8> = "The quick brown fox jumps over the lazy dog".to_string().into_bytes();
+	let msg_len = message.len();
+	message.append(&mut ((0x80) as u64).to_le_bytes().to_vec()); // append a bit
+	while message.len() * 8 < 448 { // append 0x00 untill at length 448
+		message.push(0x00);
+	}
+
+	message.append(&mut ((msg_len * 8) as u64).to_le_bytes().to_vec()); // append the length as a u64
+
+	println!("Message:");
+	for bytes in message.chunks(16) {
+		for bytes in bytes.chunks(4) {
+			for b in bytes.iter().rev() {
+				print!("{b:02x?}");
+			}
+			print!(" ");
+		}
+		print!("\n");
+	}
+
+	// let mut message: [cl_uint; 16] = [
+	// 	0xb00bb00b_u32.to_be(), 0xb00bb00b_u32.to_be(), 0xb00bb00b_u32.to_be(), 0xb00bb00b_u32.to_be(),
+	// 	0x00000080, 0x00000000, 0x00000000, 0x00000000, // append a bit, meaning append 0x80 byte
+	// 	0x00000000, 0x00000000, 0x00000000, 0x00000000,
+	// 	0x00000000, 0x00000000, 0x00000080, 0x00000000, // last 64 bits is length in bits
+	// ];
 
     let messagebuf = unsafe {
         Buffer::<cl_uint>::create(&context, CL_MEM_USE_HOST_PTR, 64, message.as_mut_ptr() as *mut c_void)?
@@ -152,6 +124,8 @@ fn main() -> Result<()> {
     let end_time = kernel_event.profiling_command_end()?;
     let duration = end_time - start_time;
     println!("kernel execution duration (ns): {}", duration);
+
+	let digest: [cl_uint; 4] = digest.map(|b: u32| b.to_be());
 
 	println!("{:x?}", digest);
 
